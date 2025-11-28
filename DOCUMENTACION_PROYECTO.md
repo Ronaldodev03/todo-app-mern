@@ -136,6 +136,7 @@ El backend sigue el patrón **MVC (Model-View-Controller)** con una arquitectura
 **4. Middlewares**
 - `auth.js`: Verificación de JWT y protección de rutas
 - `errorHandler.js`: Manejo centralizado de errores
+- `csrfProtection.js`: Protección CSRF mediante verificación Origin/Referer (solo producción)
 
 **5. Validators**
 - `auth.validator.js`: Validación de registro y login
@@ -152,23 +153,39 @@ El backend sigue el patrón **MVC (Model-View-Controller)** con una arquitectura
 // Generación de token
 const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
 
-// Cookie segura
+// Cookie segura con configuración cross-domain
 res.cookie('token', token, {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
 });
 ```
+
+**Configuración sameSite:**
+- **Desarrollo**: `'strict'` - Máxima protección, mismo dominio
+- **Producción**: `'none'` - Permite cross-domain (Vercel ↔ Render)
+  - Se complementa con middleware CSRF para seguridad
 
 #### Protección de Rutas
 ```javascript
 // Middleware de autenticación
 export const protect = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) throw new Error('No autorizado');
+  let token;
+
+  // Prioriza cookies HttpOnly (más seguro)
+  if (req.cookies.token) {
+    token = req.cookies.token;
+  }
+  // Fallback a Authorization header
+  else if (req.headers.authorization?.startsWith('Bearer')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) throw new AppError('No token provided', 401);
 
   const decoded = jwt.verify(token, JWT_SECRET);
-  req.user = await User.findById(decoded.userId);
+  req.user = await User.findById(decoded.id);
   next();
 };
 ```
@@ -304,15 +321,35 @@ export const ThemeProvider = ({ children }) => {
 // axios.js - Instancia configurada
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL,
-  withCredentials: true
+  withCredentials: true  // CRÍTICO: permite enviar cookies automáticamente
 });
 
-// Interceptor para tokens
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+// Interceptor para redirigir en errores 401
+const shouldRedirectToLogin = (error) => {
+  if (error.response?.status !== 401) return false;
+
+  const currentPath = window.location.pathname;
+  if (currentPath === '/login' || currentPath === '/register' || currentPath === '/') {
+    return false;
+  }
+
+  const failedUrl = error.config?.url || '';
+  if (failedUrl.includes('/auth/')) {
+    return false;
+  }
+
+  return true;
+};
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (shouldRedirectToLogin(error)) {
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
 
 // auth.api.js
 export const authApi = {
@@ -356,7 +393,7 @@ export const taskSchema = z.object({
 
 #### Sistema de Temas
 - Tema claro y oscuro
-- Persistencia en localStorage
+- Persistencia en localStorage (solo tema, NO tokens)
 - Cambio dinámico sin recarga
 - Aplicado con Tailwind CSS (clase `dark`)
 
@@ -461,13 +498,13 @@ mongod --dbpath /ruta/a/datos
 #### Login
 - Validación de credenciales
 - Token JWT con expiración (7 días)
-- Cookie httpOnly segura
-- Almacenamiento en localStorage (frontend)
+- Cookie httpOnly segura (no accesible por JavaScript)
+- Token enviado automáticamente en cada petición
 
 #### Logout
-- Invalidación de token
-- Limpieza de cache en frontend
-- Redirección automática
+- Invalidación de cookie en backend
+- Limpieza de cache React Query en frontend
+- Redirección automática a /login
 
 #### Protección de Rutas
 - Middleware de autenticación en backend
@@ -704,6 +741,7 @@ interface Stats {
 sequenceDiagram
     participant Usuario
     participant Frontend
+    participant Navegador
     participant Backend
     participant MongoDB
 
@@ -716,15 +754,18 @@ sequenceDiagram
         Backend->>Backend: Hash de contraseña (bcrypt)
         Backend->>MongoDB: Guardar usuario
         Backend->>Backend: Generar JWT
-        Backend->>Frontend: Token + datos de usuario
-        Frontend->>Frontend: Guardar token en localStorage
+        Backend->>Navegador: Set-Cookie: token (httpOnly, secure, sameSite)
+        Backend->>Frontend: Datos de usuario
+        Navegador->>Navegador: Guarda cookie automáticamente
         Frontend->>Frontend: Actualizar estado React Query
         Frontend->>Usuario: Redirección a /dashboard
     else Usuario existente
         Backend->>Backend: Comparar contraseña
         Backend->>Backend: Generar JWT
-        Backend->>Frontend: Token + datos de usuario
-        Frontend->>Frontend: Guardar token
+        Backend->>Navegador: Set-Cookie: token
+        Backend->>Frontend: Datos de usuario
+        Navegador->>Navegador: Guarda cookie automáticamente
+        Frontend->>Frontend: Actualizar estado React Query
         Frontend->>Usuario: Redirección a /dashboard
     end
 ```
@@ -733,19 +774,27 @@ sequenceDiagram
 
 ```
 1. Usuario hace petición
-2. Interceptor Axios añade header Authorization
-3. Backend verifica token en middleware
-4. Si válido: continúa | Si inválido: 401 Unauthorized
-5. Frontend maneja respuesta
+2. Navegador envía cookie automáticamente (withCredentials: true)
+3. Backend lee token desde req.cookies.token
+4. Backend verifica token en middleware protect
+5. Si válido: continúa | Si inválido: 401 Unauthorized
+6. Frontend maneja respuesta (interceptor redirige si 401)
 ```
+
+**Ventajas del enfoque con cookies:**
+- ✅ Cookie httpOnly: no accesible por JavaScript (protección XSS)
+- ✅ sameSite: strict: protección contra CSRF
+- ✅ secure: solo se envía por HTTPS en producción
+- ✅ Automático: el navegador envía la cookie en cada petición
 
 ---
 
 ## Gestión de Estado
 
 ### Backend - Estado de Sesión
-- JWT almacenado en cookie httpOnly
-- Token en header Authorization
+- JWT almacenado en cookie httpOnly (primera opción, más seguro)
+- Fallback a token en header Authorization (compatibilidad)
+- Cookie configurada con: httpOnly, secure (producción), sameSite: strict
 - Sesión válida por 7 días
 
 ### Frontend - Estado Global
@@ -856,10 +905,16 @@ server {
 
 - Hash de contraseñas con bcrypt (12 salt rounds)
 - JWT con expiración configurable
-- Cookies httpOnly y secure en producción
+- **Cookies httpOnly y secure en producción**
+  - `sameSite: 'none'` en producción para cross-domain
+  - `sameSite: 'strict'` en desarrollo para máxima seguridad
+- **Protección CSRF con middleware personalizado**
+  - Verificación de headers Origin y Referer
+  - Solo activo en producción
+  - Bloquea peticiones mutantes (POST, PUT, DELETE) de orígenes no autorizados
 - Validación de datos (Express Validator)
 - Protección contra inyección NoSQL (Mongoose)
-- CORS configurado
+- CORS configurado con `credentials: true`
 - Manejo seguro de errores (sin exponer stack traces)
 - Rate limiting recomendado (express-rate-limit)
 
@@ -867,9 +922,10 @@ server {
 
 - Validación de datos con Zod
 - Sanitización de inputs
-- Tokens en localStorage (considerar httpOnly cookies para mayor seguridad)
-- Rutas protegidas
-- Interceptores para manejo de errores
+- **Tokens en cookies httpOnly** (NO en localStorage para mayor seguridad)
+- Rutas protegidas con `ProtectedRoute` y `PublicRoute`
+- Interceptores de axios para manejo de errores 401
+- Prevención de bucles de redirección en rutas públicas
 - CSP headers recomendados
 
 ---

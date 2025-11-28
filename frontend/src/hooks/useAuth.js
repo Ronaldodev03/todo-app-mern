@@ -14,15 +14,10 @@ export const useAuth = () => {
   } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: async () => {
-      const token = localStorage.getItem('token');
-      if (!token) return null;
-
       try {
         const response = await authApi.getMe();
         return response.data.user;
       } catch (error) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
         return null;
       }
     },
@@ -34,7 +29,6 @@ export const useAuth = () => {
   const loginMutation = useMutation({
     mutationFn: authApi.login,
     onSuccess: (response) => {
-      localStorage.setItem('token', response.token);
       queryClient.setQueryData(['auth', 'me'], response.data.user);
     },
   });
@@ -43,7 +37,6 @@ export const useAuth = () => {
   const registerMutation = useMutation({
     mutationFn: authApi.register,
     onSuccess: (response) => {
-      localStorage.setItem('token', response.token);
       queryClient.setQueryData(['auth', 'me'], response.data.user);
     },
   });
@@ -52,16 +45,12 @@ export const useAuth = () => {
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
     onSuccess: () => {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
       queryClient.setQueryData(['auth', 'me'], null);
       queryClient.clear();
       navigate('/login');
     },
     onError: () => {
       // Aunque falle el logout en el servidor, limpiamos el cliente
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
       queryClient.setQueryData(['auth', 'me'], null);
       queryClient.clear();
       navigate('/login');

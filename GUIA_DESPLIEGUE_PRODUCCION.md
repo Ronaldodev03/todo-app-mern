@@ -169,11 +169,13 @@ JWT_SECRET=tu-clave-super-secreta-de-produccion-cambiar-esto-123456789
 JWT_EXPIRES_IN=7d
 JWT_COOKIE_EXPIRES_IN=7
 CORS_ORIGIN=https://tu-frontend.vercel.app
+FRONTEND_URL=https://tu-frontend.vercel.app
 ```
 
 **Importante**:
 - Cambiar `JWT_SECRET` por una clave única y segura (usa un generador de contraseñas)
-- `CORS_ORIGIN` lo configurarás después con la URL del frontend
+- `CORS_ORIGIN` y `FRONTEND_URL` los configurarás después con la URL del frontend (pueden ser iguales)
+- `FRONTEND_URL` se usa en el middleware CSRF para validar el origen de las peticiones
 - El `PORT` en Render debe ser `10000` (o usar `process.env.PORT`)
 
 #### 3.4 Deploy
@@ -225,6 +227,7 @@ JWT_SECRET=...
 JWT_EXPIRES_IN=7d
 JWT_COOKIE_EXPIRES_IN=7
 CORS_ORIGIN=https://tu-frontend.vercel.app
+FRONTEND_URL=https://tu-frontend.vercel.app
 ```
 
 3. Deploy automático
@@ -440,6 +443,29 @@ Vercel y Render lo hacen automáticamente. ✅
 - ✅ Usar secretos fuertes para `JWT_SECRET`
 - ✅ Cambiar credenciales de MongoDB periódicamente
 
+### 8.5 Cookies HttpOnly Seguras
+
+Esta aplicación usa **cookies HttpOnly** en lugar de localStorage para mayor seguridad:
+
+- ✅ Las cookies HttpOnly no son accesibles por JavaScript (protección XSS)
+- ✅ `sameSite: strict` previene ataques CSRF
+- ✅ `secure: true` en producción (solo HTTPS)
+- ✅ El token NO se almacena en localStorage
+
+**Configuración requerida:**
+```javascript
+// Backend - CORS debe permitir cookies
+cors({
+  origin: process.env.CORS_ORIGIN,
+  credentials: true  // CRÍTICO
+})
+
+// Frontend - axios debe enviar cookies
+axios.create({
+  withCredentials: true  // CRÍTICO
+})
+```
+
 ---
 
 ## 9. Monitoreo y Mantenimiento
@@ -557,8 +583,23 @@ Render, Vercel y Netlify ya tienen CI/CD integrado:
 
 ## 13. Solución de Problemas Comunes
 
-### Error: "CORS policy"
-**Solución**: Verificar que `CORS_ORIGIN` en backend coincida exactamente con la URL del frontend.
+### Error: "CORS policy" o "Las cookies no se envían"
+**Solución**:
+1. Verificar que `CORS_ORIGIN` en backend coincida exactamente con la URL del frontend
+2. Asegurarse de que el backend tenga `credentials: true` en la configuración de CORS
+3. Verificar que el frontend tenga `withCredentials: true` en axios
+4. Las cookies HttpOnly requieren que ambos (frontend y backend) tengan configurado `credentials: true`
+5. **En producción**: Verificar que `sameSite: 'none'` y `secure: true` estén configurados en las cookies
+
+### Error: "Forbidden - Invalid origin" (403)
+**Solución**:
+Este error indica que el middleware CSRF está bloqueando la petición. Verifica:
+1. Que `CORS_ORIGIN` y `FRONTEND_URL` en backend coincidan con la URL exacta del frontend
+2. Que ambas variables incluyan el protocolo (https://) y NO tengan barra al final
+   - ✅ Correcto: `https://tu-app.vercel.app`
+   - ❌ Incorrecto: `https://tu-app.vercel.app/`
+3. Si el error persiste, verifica los logs del backend para ver qué origen está siendo bloqueado
+4. El middleware CSRF solo se activa en producción (`NODE_ENV=production`)
 
 ### Error: "Cannot connect to MongoDB"
 **Solución**:
@@ -566,8 +607,12 @@ Render, Vercel y Netlify ya tienen CI/CD integrado:
 2. Verificar que IP esté permitida en Network Access
 3. Verificar credenciales de usuario
 
-### Error: "JWT malformed"
-**Solución**: Limpiar localStorage del navegador y volver a hacer login.
+### Error: "JWT malformed" o "Token inválido"
+**Solución**:
+1. Limpiar las cookies del navegador (F12 → Application → Cookies → Eliminar cookie 'token')
+2. Volver a hacer login
+3. Verificar que el backend esté configurado con `cookie-parser`
+4. Verificar que `CORS_ORIGIN` coincida con la URL del frontend
 
 ### Frontend muestra página en blanco
 **Solución**:

@@ -6,6 +6,7 @@ import connectDB from './config/database.js';
 import authRoutes from './routes/auth.routes.js';
 import taskRoutes from './routes/task.routes.js';
 import { errorHandler, notFound } from './middlewares/errorHandler.js';
+import { csrfProtection } from './middlewares/csrfProtection.js';
 
 dotenv.config();
 
@@ -23,6 +24,11 @@ app.use(
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+
+// Protección CSRF mediante verificación de origin/referer (solo en producción)
+if (process.env.NODE_ENV === 'production') {
+  app.use(csrfProtection);
+}
 
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path} - ${new Date().toISOString()}`);
